@@ -14,37 +14,53 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import java.util.List;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
 
 @Configuration
 public class SecurityConfig {
-    @Bean PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+    @Bean
+    PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+
+    @Bean
+    SecurityContextRepository securityContextRepository() {
+        return new HttpSessionSecurityContextRepository();
+    }
 
     @Bean
     SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-                .cors(cors -> {})
+                .cors(c -> c.configurationSource(corsConfigurationSource()))
                 .csrf(csrf -> csrf.disable()) // keep simple for minor project/API
                 .headers(h -> h.frameOptions(f -> f.sameOrigin())) // allow H2 console
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
                 )
+                .securityContext(sc -> sc.securityContextRepository(securityContextRepository()))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/**", "/h2-console/**", "/login", "/logout", "/error").permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/files/**").authenticated()
-                        .requestMatchers("/subjects/**", "/reminders/**").authenticated()
+                        .requestMatchers("/auth/signup", "/auth/login", "/h2-console/**", "/error").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/logout").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/auth/logout").permitAll()
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated()
                 )
-                .formLogin(form -> form
-                        .loginProcessingUrl("/login")     // POST x-www-form-urlencoded
-                        .usernameParameter("email")       // we use email
-                        .passwordParameter("password")
-                        .successHandler((req,res,auth) -> res.setStatus(200)) // no redirect
-                        .failureHandler((req,res,ex) -> res.sendError(401, "Bad credentials"))
-                )
+                // Frontend posts JSON to /auth/login (no form login UI)
+                .formLogin(form -> form.disable())
+                .httpBasic(basic -> basic.disable())
+                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.ALWAYS))
                 .logout(lo -> lo
-                        .logoutUrl("/logout")
-                        .logoutSuccessHandler((req,res,auth) -> res.setStatus(200))
+                        .logoutRequestMatcher(new OrRequestMatcher(
+                                new AntPathRequestMatcher("/auth/logout", "POST"),
+                                new AntPathRequestMatcher("/auth/logout", "GET")
+                        ))
+                        .deleteCookies("JSESSIONID")
+                        .invalidateHttpSession(true)
+                        .clearAuthentication(true)
+                        .logoutSuccessHandler((req, res, auth) -> res.setStatus(HttpStatus.NO_CONTENT.value()))
                 );
         return http.build();
     }
@@ -58,13 +74,20 @@ public class SecurityConfig {
     CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
         String fe = System.getenv("FRONTEND_ORIGIN");
+
+        // Use patterns to support dynamic ngrok subdomains and deployed HTTPS frontends
+        config.setAllowedOriginPatterns(List.of(
+                "http://localhost:5173",
+                "https://*.ngrok.io",
+                "https://*.ngrok-free.app"
+        ));
         if (fe != null && !fe.isBlank()) {
-            config.setAllowedOrigins(java.util.List.of("http://localhost:5173", fe));
-        } else {
-            config.setAllowedOrigins(java.util.List.of("http://localhost:5173"));
+            // Add exact frontend origin if provided
+            config.addAllowedOrigin(fe);
         }
-        config.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(java.util.List.of("Content-Type", "Authorization", "Accept", "X-Requested-With"));
+
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        config.setAllowedHeaders(List.of("Content-Type", "Authorization", "Accept", "X-Requested-With"));
         config.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
